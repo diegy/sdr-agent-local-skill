@@ -1,0 +1,26 @@
+{
+  "title": "官网客服 SDR 本地测试 - OpenClaw",
+  "topic": "咨询 CRM 产品能力",
+  "directions": [
+    "咨询产品价格和报价方式",
+    "咨询 CRM 核心功能和典型使用场景",
+    "咨询实施周期、上线方式和培训支持"
+  ],
+  "loops": 1,
+  "turns": 3,
+  "userDescription": "制造业销售负责人",
+  "historySummary": "首次了解官网客服的引导和需求挖掘能力",
+  "curl": "curl 'https://example.com/sse/agent/conversation/completions' -H 'content-type: application/json' --data-raw '{\"content\":[{\"type\":\"text\",\"text\":\"你好\"}],\"sessionId\":\"agent_debug_demo\"}'",
+  "driver": {
+    "preset": "openclaw",
+    "label": "openclaw",
+    "command": "openclaw",
+    "args": [],
+    "promptMode": "stdin",
+    "timeoutMs": 180000
+  },
+  "stopOnError": true,
+  "stepRetryCount": 2,
+  "requestTimeoutMs": 75000,
+  "reportDir": "./reports"
+}
