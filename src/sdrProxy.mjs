@@ -5,6 +5,18 @@ const WEBSITE_WEBIM_TIMEOUT_MS = 70000;
 const SDR_IDLE_FLUSH_MS = 1200;
 const WEBIM_POLL_INTERVAL_MS = 1200;
 const webImSessionStore = new Map();
+const WEBIM_WELCOME_MARKERS = [
+  "叮咚~纷享销客CRM",
+  "纷享销客CRM，智能型客户关系管理平台",
+  "连续5年稳居本土SaaS CRM市场占有率TOP1",
+  "为超6000+大中型企业提供CRM解决方案",
+  "1、营销获客",
+  "2、销售管理",
+  "3、客户管理",
+  "4、服务管理",
+  "5、渠道管理",
+  "您需要了解哪个场景的问题呢？可以留下您的联系方式帮您介绍",
+];
 
 function tryParseJson(value) {
   try {
@@ -127,6 +139,13 @@ function normalizeHeaders(headers) {
   return result;
 }
 
+function sanitizeWebsiteCookieHeader(rawCookie, preserveCookies = false) {
+  const normalized = String(rawCookie || "").trim();
+  if (!normalized) return "";
+  if (preserveCookies) return normalized;
+  return "";
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = SDR_UPSTREAM_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -189,6 +208,10 @@ function buildImChatUrl(templateUrl, overrides) {
 }
 
 function buildWebImHeaders(state, extraHeaders = {}) {
+  const cookieHeader = sanitizeWebsiteCookieHeader(
+    pickHeader(state.baseHeaders, "cookie"),
+    state.preserveCookies,
+  );
   return normalizeHeaders({
     Accept: "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": pickHeader(state.baseHeaders, "accept-language") || "zh-CN",
@@ -197,7 +220,7 @@ function buildWebImHeaders(state, extraHeaders = {}) {
     Referer: state.imchatUrl,
     "Source-Type": state.sourceType,
     "Out-Cookie": state.outCookie,
-    ...(pickHeader(state.baseHeaders, "cookie") ? { Cookie: pickHeader(state.baseHeaders, "cookie") } : {}),
+    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     ...(state.fsToken ? { "fs-token": state.fsToken } : {}),
     ...(extraHeaders || {}),
   });
@@ -231,6 +254,7 @@ async function initializeWebImSession(options) {
     visitorId,
     fsToken: "",
     baseHeaders: { ...options.headers },
+    preserveCookies: options.preserveCookies === true,
   };
 
   const generateUserUrl = `https://www.fxiaoke.com/online/consult/comm/auth/generateUser?traceId=${createWebImTraceId()}&webImId=${state.webImId}&customParams=&updateParams=&_=${Date.now()}`;
@@ -305,6 +329,60 @@ function extractWebImArtifactTextCandidates(payload) {
     : [];
 
   return Array.from(new Set([...directArtifactParts, ...finishArtifactParts]));
+}
+
+function splitWebImWelcomeText(rawText) {
+  const normalized = String(rawText || "").trim();
+  if (!normalized) {
+    return {
+      replyText: "",
+      welcomeText: "",
+    };
+  }
+
+  const markerIndexes = WEBIM_WELCOME_MARKERS
+    .map((marker) => normalized.indexOf(marker))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+
+  if (!markerIndexes.length) {
+    return {
+      replyText: normalized,
+      welcomeText: "",
+    };
+  }
+
+  const welcomeIndex = markerIndexes[0];
+  if (welcomeIndex === 0) {
+    return {
+      replyText: "",
+      welcomeText: normalized,
+    };
+  }
+
+  return {
+    replyText: normalized.slice(0, welcomeIndex).trim(),
+    welcomeText: normalized.slice(welcomeIndex).trim(),
+  };
+}
+
+function splitWebImReplySet(texts) {
+  const replySeen = new Set();
+  const welcomeSeen = new Set();
+  const replyTexts = [];
+  const welcomeTexts = [];
+
+  (texts || []).forEach((text) => {
+    const { replyText, welcomeText } = splitWebImWelcomeText(text);
+    if (replyText) appendUnique(replyTexts, replySeen, replyText);
+    if (welcomeText) appendUnique(welcomeTexts, welcomeSeen, welcomeText);
+  });
+
+  return {
+    replyTexts,
+    welcomeTexts,
+    welcomeText: welcomeTexts.join("\n"),
+  };
 }
 
 async function readStreamToSseEvents(response, onEvent) {
@@ -390,7 +468,8 @@ async function fetchWebImMessages(state, timeoutMs) {
 
 async function pollWebImReply(state, userMessageId, userCreateTime, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let collectedTexts = [];
+  let collectedReplyTexts = [];
+  let collectedWelcomeTexts = [];
   let lastChangeAt = 0;
   let latestMessages = [];
   let sawUpdate = false;
@@ -436,21 +515,26 @@ async function pollWebImReply(state, userMessageId, userCreateTime, timeoutMs) {
         .map((text) => text.trim())
         .filter(Boolean);
 
-      const mergedTexts = Array.from(new Set(candidateTexts));
-      if (mergedTexts.join("\n") !== collectedTexts.join("\n")) {
-        collectedTexts = mergedTexts;
+      const splitResult = splitWebImReplySet(candidateTexts);
+      if (
+        splitResult.replyTexts.join("\n") !== collectedReplyTexts.join("\n") ||
+        splitResult.welcomeTexts.join("\n") !== collectedWelcomeTexts.join("\n")
+      ) {
+        collectedReplyTexts = splitResult.replyTexts;
+        collectedWelcomeTexts = splitResult.welcomeTexts;
         lastChangeAt = Date.now();
       }
     }
 
-    if (collectedTexts.length > 0 && lastChangeAt && Date.now() - lastChangeAt >= SDR_IDLE_FLUSH_MS) {
+    if (collectedReplyTexts.length > 0 && lastChangeAt && Date.now() - lastChangeAt >= SDR_IDLE_FLUSH_MS) {
       return {
-        text: collectedTexts.join("\n"),
+        text: collectedReplyTexts.join("\n"),
         diagnostics: {
           mode: "website-webim",
           messageCount: latestMessages.length,
           sessionId: state.sessionId,
           webImId: state.webImId,
+          welcomeText: collectedWelcomeTexts.join("\n"),
         },
       };
     }
@@ -459,15 +543,20 @@ async function pollWebImReply(state, userMessageId, userCreateTime, timeoutMs) {
   }
 
   return {
-    text: collectedTexts.join("\n"),
+    text: collectedReplyTexts.join("\n"),
     diagnostics: {
       mode: "website-webim",
-      reason: collectedTexts.length > 0 ? "收到部分回复后超时" : "等待官网客服回复超时",
+      reason: collectedReplyTexts.length > 0
+        ? "收到部分正式回复后超时"
+        : collectedWelcomeTexts.length > 0
+          ? "仅收到欢迎语，等待正式回复超时"
+          : "等待官网客服回复超时",
       sessionId: state.sessionId,
       webImId: state.webImId,
       sawUpdate,
       lastObservedVersion,
       lastCheckVersion,
+      welcomeText: collectedWelcomeTexts.join("\n"),
     },
   };
 }
@@ -560,6 +649,7 @@ export function prepareSdrRequest(parsedRequest, options) {
     hasConversationId,
     sessionTemplateValue: bodyTemplate.sessionId,
     conversationTemplateValue: bodyTemplate.conversationId,
+    preserveWebsiteCookies: options?.preserveWebsiteCookies === true,
   };
 }
 
@@ -671,10 +761,11 @@ async function proxyWebsiteCustomerServiceMessage(options) {
     .map((text) => text.trim())
     .filter(Boolean);
   const mergedTexts = Array.from(new Set([...messageTexts, ...(artifactText ? [artifactText] : [])]));
+  const splitResult = splitWebImReplySet(mergedTexts);
 
-  if (mergedTexts.length > 0) {
+  if (splitResult.replyTexts.length > 0) {
     return {
-      text: mergedTexts.join("\n"),
+      text: splitResult.replyTexts.join("\n"),
       diagnostics: {
         mode: "website-webim",
         requestUrl: sendUrl,
@@ -682,6 +773,7 @@ async function proxyWebsiteCustomerServiceMessage(options) {
         messageCount: latestMessages.length,
         sessionId: state.sessionId,
         webImId: state.webImId,
+        welcomeText: splitResult.welcomeText,
         sessionState: {
           conversationKey: state.key,
           sessionId: state.sessionId,

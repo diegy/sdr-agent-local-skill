@@ -75,6 +75,9 @@ The user does not need to hand-write strict JSON if the assistant can infer the 
 - If your local CLI needs a shell pipeline, use `shellCommand` and read the prompt from env var `SDR_PROMPT`
 - If your local CLI accepts prompt via stdin, use `command` + `args` + `promptMode: "stdin"`
 - `stopOnError` defaults to `true`; keep it this way for realistic testing so the run stops once the target chain is broken
+- 官网客服模式默认不透传原始 `Cookie`，以减少不同 loop 复用同一个真实后端会话的风险
+- 官网客服模式会单独识别首轮欢迎语；欢迎语会保留在日志/报告里，但不会被当成正式回复推进下一轮对话
+- If you intentionally want to reuse the real webpage session, set `preserveWebsiteCookies: true`
 
 ## Output expectations
 

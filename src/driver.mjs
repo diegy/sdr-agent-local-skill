@@ -1,13 +1,35 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { randomAlphaNumeric, stripAnsi } from "./utils.mjs";
 
+const commandHelpCache = new Map();
+
 async function createTempOutputPath(prefix = "sdr-agent-local-skill", extension = ".txt") {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `${prefix}-`));
   return path.join(tempDir, `output-${randomAlphaNumeric(8)}${extension}`);
+}
+
+function readCommandHelp(command, args = ["--help"]) {
+  const cacheKey = `${command}\u0000${args.join("\u0000")}`;
+  if (commandHelpCache.has(cacheKey)) {
+    return commandHelpCache.get(cacheKey);
+  }
+
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    env: process.env,
+  });
+  const helpText = [result.stdout || "", result.stderr || ""].join("\n");
+  commandHelpCache.set(cacheKey, helpText);
+  return helpText;
+}
+
+function commandSupportsFlag(command, helpArgs, flag) {
+  const helpText = readCommandHelp(command, helpArgs);
+  return helpText.includes(flag);
 }
 
 async function resolveDriver(driver = {}) {
@@ -25,22 +47,32 @@ async function resolveDriver(driver = {}) {
 
   if (preset === "codex") {
     const outputFile = await createTempOutputPath("sdr-codex");
+    const command = driver.command || "codex";
+    const args = [
+      "exec",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+    ];
+
+    // Codex CLI flags have changed across versions. Only pass approval flags
+    // when the local executable explicitly advertises support for them.
+    if (commandSupportsFlag(command, ["exec", "--help"], "--ask-for-approval")) {
+      args.push("--ask-for-approval", "never");
+    }
+
+    args.push(
+      "--color",
+      "never",
+      "--output-last-message",
+      outputFile,
+      ...(driver.args || []),
+    );
+
     return {
       ...driver,
-      command: driver.command || "codex",
-      args: [
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "--ask-for-approval",
-        "never",
-        "--color",
-        "never",
-        "--output-last-message",
-        outputFile,
-        ...(driver.args || []),
-      ],
+      command,
+      args,
       promptMode: "stdin",
       outputSource: "file",
       outputFile,
@@ -50,16 +82,29 @@ async function resolveDriver(driver = {}) {
   }
 
   if (preset === "claude") {
+    const command = driver.command || "claude";
+    const args = [];
+
+    if (commandSupportsFlag(command, ["--help"], "--print")) {
+      args.push("--print");
+    } else if (commandSupportsFlag(command, ["--help"], "-p")) {
+      args.push("-p");
+    }
+
+    if (commandSupportsFlag(command, ["--help"], "--output-format")) {
+      args.push("--output-format", "text");
+    }
+
+    if (commandSupportsFlag(command, ["--help"], "--no-session-persistence")) {
+      args.push("--no-session-persistence");
+    }
+
+    args.push(...(driver.args || []));
+
     return {
       ...driver,
-      command: driver.command || "claude",
-      args: [
-        "-p",
-        "--output-format",
-        "text",
-        "--no-session-persistence",
-        ...(driver.args || []),
-      ],
+      command,
+      args,
       promptMode: "stdin",
       outputSource: driver.outputSource || "stdout",
       timeoutMs: driver.timeoutMs || 180000,

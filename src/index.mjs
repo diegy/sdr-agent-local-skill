@@ -232,6 +232,11 @@ async function run() {
         logs.push(logWithTime(`生成本轮会话ID: ${loopSessionId}`));
         if (requestState.useWebsiteMode) {
           logs.push(logWithTime("已启用官网客服模式：系统会自动初始化 WebIM 会话，并在同一会话中连续完成多轮对话。"));
+          logs.push(logWithTime(
+            requestState.preserveWebsiteCookies
+              ? "官网客服模式：已按配置透传原始 Cookie，可能复用旧网页会话。"
+              : "官网客服模式：默认不透传原始 Cookie，尽量避免复用旧网页会话。",
+          ));
         }
         if (loopConversationId) {
           logs.push(logWithTime(`生成本轮对话ID: ${loopConversationId}`));
@@ -275,6 +280,7 @@ async function run() {
               body,
               conversationKey,
               timeoutMs: requestTimeoutMs,
+              preserveCookies: requestState.preserveWebsiteCookies,
             });
           });
 
@@ -284,6 +290,9 @@ async function run() {
 
           if (requestState.useWebsiteMode && sdrResponse?.diagnostics?.sessionState?.sessionId) {
             logs.push(logWithTime(`官网客服会话ID: ${sdrResponse.diagnostics.sessionState.sessionId}`));
+          }
+          if (requestState.useWebsiteMode && sdrResponse?.diagnostics?.welcomeText) {
+            logs.push(logWithTime(`识别到客服欢迎语（未计入正式回复）: ${sdrResponse.diagnostics.welcomeText}`));
           }
 
           const sdrMessage = String(sdrResponse?.text || "").trim();
@@ -313,6 +322,7 @@ async function run() {
             requestUrl: String(sdrResponse?.diagnostics?.requestUrl || parsedRequest.url || ""),
             sessionId: String(sdrResponse?.diagnostics?.sessionState?.sessionId || loopSessionId || ""),
             conversationId: String(loopConversationId || ""),
+            welcomeText: String(sdrResponse?.diagnostics?.welcomeText || ""),
           });
         }
 
@@ -339,6 +349,7 @@ async function run() {
           reason: String(scoreData.reason || "评分失败"),
           conversation,
           turnDetails,
+          realSessionId: turnDetails.find((turn) => String(turn.sessionId || "").trim())?.sessionId || "",
           avgResponseTimeMs: responseTimes.length
             ? responseTimes.reduce((sum, item) => sum + item, 0) / responseTimes.length
             : 0,
@@ -391,6 +402,17 @@ async function run() {
       findings.push(`方向“${direction.title}”平均分偏低（${direction.averageScore.toFixed(1)}），说明 SDR 在该类问题上的稳定性较弱。`);
     }
   });
+  directions.forEach((direction) => {
+    const sessions = results.filter((item) => item.directionId === direction.id);
+    const realSessionIds = Array.from(new Set(
+      sessions
+        .map((item) => String(item.realSessionId || "").trim())
+        .filter(Boolean),
+    ));
+    if (sessions.length > 1 && realSessionIds.length === 1) {
+      findings.push(`方向“${direction.title}”的多个 loop 复用了同一个真实会话ID（${realSessionIds[0]}），存在会话未隔离风险。`);
+    }
+  });
   if (!findings.length && results.length) {
     findings.push("本轮测试未发现明显结构性异常，建议继续扩大方向和样本量做验证。");
   }
@@ -419,6 +441,7 @@ async function run() {
         requestUrl: turn.requestUrl,
         sessionId: turn.sessionId,
         conversationId: turn.conversationId,
+        welcomeText: turn.welcomeText,
       }))
       : []
   ));

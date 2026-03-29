@@ -74,6 +74,9 @@ function buildMarkdownReport(summary) {
     lines.push("");
     lines.push(`- 评分：${session.score}`);
     lines.push(`- 评分理由：${session.reason}`);
+    if (session.realSessionId) {
+      lines.push(`- 实际后端会话ID：${session.realSessionId}`);
+    }
     lines.push(`- 平均响应耗时：${session.avgResponseTimeText}`);
     lines.push(`- 最大响应耗时：${session.maxResponseTimeText}`);
     lines.push("");
@@ -82,6 +85,9 @@ function buildMarkdownReport(summary) {
       lines.push("");
       session.turnDetails.forEach((turn) => {
         lines.push(`- 第 ${turn.turnIndex} 轮：用户时间 ${turn.userMessageAtText}；发起请求 ${turn.requestStartedAtText}；收到回复 ${turn.responseReceivedAtText}；耗时 ${turn.responseDurationText}${turn.traceId ? `；traceId ${turn.traceId}` : ""}`);
+        if (turn.welcomeText) {
+          lines.push(`- 第 ${turn.turnIndex} 轮欢迎语（未计入正式回复）：${turn.welcomeText}`);
+        }
       });
       lines.push("");
     }
@@ -129,6 +135,7 @@ function buildTurnsCsv(turnRecords) {
     "requestUrl",
     "sessionId",
     "conversationId",
+    "welcomeText",
     "userMessage",
     "sdrMessage",
   ];
