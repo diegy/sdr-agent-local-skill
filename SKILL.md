@@ -85,3 +85,31 @@ The user does not need to hand-write strict JSON if the assistant can infer the 
 - Scoring output: JSON with `score` and `reason`
 
 If the scorer returns extra text, the runner will try to extract the first JSON object.
+
+## Prompt And Flow Change Discipline
+
+When the task involves diagnosing or modifying prompt templates / flows for the SDR agent, follow these rules before making changes:
+
+1. Diagnose first, then decide how to change. Do not jump straight to prompt edits before checking traces, current prompt IO schema, active flow version, and whether the issue is caused by prompt, flow wiring, or downstream topic / lead-field injection.
+2. Evaluate full-flow impact before changing strategy. Changes to `followupMode` /追问模式, topic library /话题库, and lead capture /留资字段 must be checked together so they do not fight each other. `followupMode` only decides whether asking is allowed and what category is allowed; the concrete follow-up topic still comes from the topic library when follow-up is permitted.
+3. For prompt input variables, register them in step 1 `基础信息配置` first, then insert them into the prompt body using the same variable-tag format as existing variables. Editing body text alone is not enough.
+4. For prompt output fields, ensure the prompt body and `outputSetting` schema stay aligned. If the body requires `followup_mode` or another field, the template output config must declare it before the flow can publish cleanly.
+5. Every prompt / flow edit must be saved as a new version and then switched to the new active version. Do not assume `保存为新版本` also made it current.
+6. When modifying prompts through browser automation, verify you are inside the correct prompt editor (`apiName`, version, current flag) before saving. Do not reuse a patch flow that may still be attached to the wrong editor context.
+7. After any prompt change, regress all required scenarios instead of only the one that triggered the edit. Repetition, over-follow-up, unsupported knowledge expansion, and tone hardening can regress across scenes.
+8. For reply-effect testing, prefer request-level regression first. Do not ask for Keychain / secret access just to validate output quality if the same verification can be done by replaying real web customer-service requests.
+9. Never close, restart, or take over the user's browser unless the user explicitly authorizes that action for the current step. If browser automation is unavoidable, attach only to the user-specified browser/profile and keep the browser state intact.
+10. If a scripted regression times out on some scenes, retry those failed scenes with a narrowed config instead of rerunning everything blindly. This keeps trace collection stable and avoids mixing timeout noise into unrelated scenarios.
+11. Treat control variables and content variables differently. A variable like `followupMode` /追问模式 should stay content-agnostic and only describe follow-up control, not business-specific content. Do not encode domain-specific subtypes such as `限定ERP追问` into the main control contract; if a restriction depends on product line / scenario content, solve it with topic selection, prompt rules, or another content-layer mechanism instead.
+12. When evaluating a proposed fix, first ask whether the proposed new field is carrying control or carrying content. If it carries content, it should not be used as a top-level flow control variable. This is a required checkpoint before deciding the solution direction.
+13. Never design prompt / flow rules around hard-coded business content such as specific products, modules, industries, or scenario labels. Content must come from `知识库`, `话题库`, and `话术案例库`, not from control-layer rules.
+14. When solving repetition problems, prefer abstract structural constraints over content constraints. The right targets are things like:
+    - answer the newest user delta first
+    - avoid repeating the previous turn's opening pattern
+    - avoid reusing the same answer skeleton on same-topic follow-ups
+    - avoid expanding scope after the user narrows scope
+    Do NOT solve repetition by enumerating specific product phrases such as “模块定位句最多一次”.
+15. Before proposing a fix, classify the problem into one of two buckets:
+    - control / structure problem: should be solved by flow gates, turn-level variables, or abstract prompt rules
+    - content / retrieval problem: should be solved by `知识库` / `话题库` / `案例库` selection or matching
+    Only after that classification should you decide what to modify.
